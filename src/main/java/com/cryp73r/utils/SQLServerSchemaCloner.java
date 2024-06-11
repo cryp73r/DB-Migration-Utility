@@ -1,20 +1,20 @@
 package com.cryp73r.utils;
 
-import com.cryp73r.model.ViewInfo;
-
 import java.io.*;
-import java.sql.Date;
 import java.sql.*;
-import java.text.SimpleDateFormat;
 import java.util.*;
+import java.sql.Date;
+import java.text.SimpleDateFormat;
+
+import com.cryp73r.model.ViewInfo;
 
 public class SQLServerSchemaCloner {
 
-    private final Set<String> hashSet = new HashSet<>();
-    final Set<String> uniqueConstraintSet = new HashSet<>();
-    Map<String, String> columnMap = new HashMap<>();
-
     public void extractSchemaAndDataToFBackup(String sourceConnectionString, String filePath) {
+        final Set<String> addedTableSet = new HashSet<>();
+        final Set<String> uniqueConstraintSet = new HashSet<>();
+        final Map<String, String> columnDefaultValueMap = new HashMap<>();
+
         try (Connection connection = DriverManager.getConnection(sourceConnectionString); BufferedWriter writer = new BufferedWriter(new FileWriter(filePath))) {
 
             DatabaseMetaData metaData = connection.getMetaData();
@@ -23,7 +23,7 @@ public class SQLServerSchemaCloner {
             ResultSet tables = metaData.getTables(null, "dbo", "%", new String[]{"TABLE"});
             while (tables.next()) {
                 String tableName = tables.getString("TABLE_NAME");
-                createTableWithPrimaryKey(connection, writer, tableName);
+                createTableWithPrimaryKey(connection, writer, tableName, columnDefaultValueMap, uniqueConstraintSet);
             }
             System.out.println("\r[V] CREATE Queries written successfully");
             tables.close();
@@ -34,10 +34,10 @@ public class SQLServerSchemaCloner {
                 String tableName = tables.getString("TABLE_NAME");
 
                 // Create foreign & unique key constraints
-                writeForignAndUniqueKeys(connection, writer, tableName);
+                writeForeignAndUniqueKeys(connection, writer, tableName, uniqueConstraintSet);
 
                 // Create indexes on the table
-                writeIndexes(connection, writer, tableName);
+                writeIndexes(connection, writer, tableName, uniqueConstraintSet);
             }
             System.out.println("\r[V] Foreign & Unique Keys and Indexes written successfully");
             tables.close();
@@ -46,7 +46,7 @@ public class SQLServerSchemaCloner {
             tables = metaData.getTables(null, "dbo", "%", new String[]{"TABLE"});
             while (tables.next()) {
                 String tableName = tables.getString("TABLE_NAME");
-                insertDataInHierarchy(connection, writer, tableName);
+                insertDataInHierarchy(connection, writer, tableName, addedTableSet);
             }
             System.out.println("\r[V] INSERT Queries written successfully");
             tables.close();
@@ -80,12 +80,11 @@ public class SQLServerSchemaCloner {
                 queryBuilder.append(line).append("\n");
             }
         } catch (IOException | SQLException e) {
-
             e.printStackTrace();
         }
     }
 
-    private void createTableWithPrimaryKey(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
+    private void createTableWithPrimaryKey(Connection connection, BufferedWriter writer, String tableName, Map<String, String> columnDefaultValueMap, Set<String> uniqueConstraintSet) throws SQLException, IOException {
         DatabaseMetaData metaData = connection.getMetaData();
         ResultSet columns = metaData.getColumns(null, null, tableName, null);
         writer.write("/** START **/\n");
@@ -111,7 +110,7 @@ public class SQLServerSchemaCloner {
 
             writer.write(columnDefinition);
             if (constraintDefinition != null) {
-                columnMap.put(columnName, constraintDefinition);
+                columnDefaultValueMap.put(columnName, constraintDefinition);
             }
         }
 
@@ -131,10 +130,10 @@ public class SQLServerSchemaCloner {
         writer.write("/** END **/\n");
 
         // Write Default value constraints
-        for (Map.Entry<String, String> entry : columnMap.entrySet()) {
+        for (Map.Entry<String, String> entry : columnDefaultValueMap.entrySet()) {
             writeDefaultConstraint(connection, writer, tableName, entry.getKey(), entry.getValue());
         }
-        columnMap.clear();
+        columnDefaultValueMap.clear();
     }
 
     private void writeDefaultConstraint(Connection connection, BufferedWriter writer, String tableName, String columnName, String constraintDefinition) throws SQLException, IOException {
@@ -152,7 +151,7 @@ public class SQLServerSchemaCloner {
         }
     }
 
-    private void writeForignAndUniqueKeys(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
+    private void writeForeignAndUniqueKeys(Connection connection, BufferedWriter writer, String tableName, Set<String> uniqueConstraintSet) throws SQLException, IOException {
         DatabaseMetaData metaData = connection.getMetaData();
 
         // Write Foreign Key constraints
@@ -210,7 +209,7 @@ public class SQLServerSchemaCloner {
         }
     }
 
-    private void writeIndexes(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
+    private void writeIndexes(Connection connection, BufferedWriter writer, String tableName, Set<String> uniqueConstraintSet) throws SQLException, IOException {
         DatabaseMetaData metaData = connection.getMetaData();
         ResultSet indexes = metaData.getIndexInfo(null, null, tableName, false, false);
         Map<String, String> indexColumnsMap = new HashMap<>();
@@ -229,22 +228,22 @@ public class SQLServerSchemaCloner {
         }
         indexes.close();
         indexes = metaData.getIndexInfo(null, null, tableName, false, false);
-        Map<String, Integer> indexNamesAdded = new HashMap<>();
+        Set<String> indexNamesAdded = new HashSet<>();
         while (indexes.next()) {
             String indexName = indexes.getString("INDEX_NAME");
-            if ((indexName != null &&  !(uniqueConstraintSet.contains(indexName))) && !indexNamesAdded.containsKey(indexName)) {
+            if ((indexName != null &&  !(uniqueConstraintSet.contains(indexName))) && !indexNamesAdded.contains(indexName)) {
                 boolean nonUnique = indexes.getBoolean("NON_UNIQUE");
                 String columnNames = indexColumnsMap.get(indexName);
                 writer.write("/** START **/\n");
                 writer.write("CREATE " + (nonUnique ? "INDEX " : "UNIQUE INDEX ") + indexName + " ON " + tableName + " (" + columnNames + ");\n");
                 writer.write("/** END **/\n");
-                indexNamesAdded.put(indexName, 0);
+                indexNamesAdded.add(indexName);
             }
         }
     }
 
-    private void insertDataInHierarchy(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
-        if (hashSet.contains(tableName)) return;
+    private void insertDataInHierarchy(Connection connection, BufferedWriter writer, String tableName, Set<String> addedTableSet) throws SQLException, IOException {
+        if (addedTableSet.contains(tableName)) return;
 
         String query = "SELECT object_name(referenced_object_id) AS 'PARENT_TABLE' FROM sys.foreign_keys WHERE object_name(parent_object_id) = ? ;";
         PreparedStatement pstmt = connection.prepareStatement(query);
@@ -252,10 +251,10 @@ public class SQLServerSchemaCloner {
         ResultSet parentSet = pstmt.executeQuery();
         while (parentSet.next()) {
             String pkTableName = parentSet.getString("PARENT_TABLE");
-            if (!(tableName.equals(pkTableName))) insertDataInHierarchy(connection, writer, pkTableName);
+            if (!(tableName.equals(pkTableName))) insertDataInHierarchy(connection, writer, pkTableName, addedTableSet);
         }
         writeInsertQuery(connection, writer, tableName);
-        hashSet.add(tableName);
+        addedTableSet.add(tableName);
     }
 
     private void writeInsertQuery(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
