@@ -5,6 +5,12 @@ public class ViewInfo {
     private final String viewDefinition;
     private final java.sql.Timestamp createDate;
 
+    public ViewInfo(String viewName, String viewDefinition) {
+        this.viewName = viewName;
+        this.viewDefinition = viewDefinition;
+        this.createDate = null;
+    }
+
     public ViewInfo(String viewName, String viewDefinition, java.sql.Timestamp createDate) {
         this.viewName = viewName;
         this.viewDefinition = viewDefinition;
