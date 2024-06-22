@@ -7,10 +7,12 @@ import java.sql.Date;
 import java.text.SimpleDateFormat;
 
 import com.cryp73r.model.ViewInfo;
+import com.cryp73r.schemaInterface.SchemaCloner;
 
-public class SQLServerSchemaCloner {
+public class SQLServerSchemaCloner implements SchemaCloner {
 
-    public void extractSchemaAndDataToFBackup(String sourceConnectionString, String filePath) {
+    @Override
+    public void extractSchemaAndDataToFBackup(String sourceConnectionString, String filePath, String username) {
         final Set<String> addedTableSet = new HashSet<>();
         final Set<String> uniqueConstraintSet = new HashSet<>();
         final Map<String, String> columnDefaultValueMap = new HashMap<>();
@@ -64,6 +66,7 @@ public class SQLServerSchemaCloner {
         }
     }
 
+    @Override
     public void loadSchemaAndDataFromBackup(String filePath, String destinationConnectionString) {
         try (BufferedReader reader = new BufferedReader(new FileReader(filePath)); Connection connection = DriverManager.getConnection(destinationConnectionString); Statement statement = connection.createStatement()) {
             StringBuilder queryBuilder = new StringBuilder();
@@ -121,7 +124,7 @@ public class SQLServerSchemaCloner {
         while (primaryKey.next()) {
             pkName = (primaryKey.getString("PK_NAME") != null)?primaryKey.getString("PK_NAME"):pkName;
             compositeColumns.append(primaryKey.getString("COLUMN_NAME")).append(",");
-        };
+        }
         if (compositeColumns.length() > 0) {
             writer.write("CONSTRAINT " + pkName + " PRIMARY KEY (" + compositeColumns.substring(0, compositeColumns.length()-1) + ")");
             uniqueConstraintSet.add(pkName);
