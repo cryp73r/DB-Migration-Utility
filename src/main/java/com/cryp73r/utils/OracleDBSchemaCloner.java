@@ -13,13 +13,12 @@ import java.util.*;
 
 public class OracleDBSchemaCloner implements SchemaCloner {
 
-    private final Set<String> hashSet = new HashSet<>();
-    final Set<String> uniqueConstraintSet = new HashSet<>();
-    //    Map<String, String> columnMap = new HashMap<>();
-    Map<String, String> tableIndexMap = new HashMap<>();
-
     @Override
     public void extractSchemaAndDataToFBackup(String sourceConnectionString, String filePath, String username) {
+        final Set<String> addedTableSet = new HashSet<>();
+        final Set<String> uniqueConstraintSet = new HashSet<>();
+        final Map<String, String> tableIndexMap = new HashMap<>();
+
         try (Connection connection = DriverManager.getConnection(sourceConnectionString); BufferedWriter writer = new BufferedWriter(new FileWriter(filePath))) {
 
             DatabaseMetaData metaData = connection.getMetaData();
@@ -28,7 +27,7 @@ public class OracleDBSchemaCloner implements SchemaCloner {
             ResultSet tables = metaData.getTables(null, username, "%", new String[]{"TABLE"});
             while (tables.next()) {
                 String tableName = tables.getString("TABLE_NAME");
-                createTableWithPrimaryKey(connection, writer, tableName);
+                createTableWithPrimaryKey(connection, writer, tableName, uniqueConstraintSet);
             }
             System.out.println("\r[V] CREATE Queries written successfully");
             tables.close();
@@ -44,10 +43,10 @@ public class OracleDBSchemaCloner implements SchemaCloner {
                 String tableName = tables.getString("TABLE_NAME");
 
                 // Create indexes on the table
-                writeIndexes(connection, writer, tableName);
+                writeIndexes(connection, writer, tableName, uniqueConstraintSet, tableIndexMap);
 
                 // Create foreign & unique key constraints
-                writeForeignAndUniqueKeys(connection, writer, tableName);
+                writeForeignAndUniqueKeys(connection, writer, tableName, uniqueConstraintSet, tableIndexMap);
             }
             System.out.println("\r[V] Foreign & Unique Keys and Indexes written successfully");
             tables.close();
@@ -61,7 +60,7 @@ public class OracleDBSchemaCloner implements SchemaCloner {
             tables = metaData.getTables(null, username, "%", new String[]{"TABLE"});
             while (tables.next()) {
                 String tableName = tables.getString("TABLE_NAME");
-                insertDataInHierarchy(connection, writer, tableName);
+                insertDataInHierarchy(connection, writer, tableName, addedTableSet);
             }
             System.out.println("\r[V] INSERT Queries written successfully");
             tables.close();
@@ -111,12 +110,11 @@ public class OracleDBSchemaCloner implements SchemaCloner {
                 queryBuilder.append(line).append("\n");
             }
         } catch (IOException | SQLException e) {
-
             e.printStackTrace();
         }
     }
 
-    private void createTableWithPrimaryKey(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
+    private void createTableWithPrimaryKey(Connection connection, BufferedWriter writer, String tableName, Set<String> uniqueConstraintSet) throws SQLException, IOException {
         DatabaseMetaData metaData = connection.getMetaData();
         ResultSet columns = metaData.getColumns(null, null, tableName, null);
         writer.write("/** START **/\n");
@@ -125,7 +123,6 @@ public class OracleDBSchemaCloner implements SchemaCloner {
         while (columns.next()) {
             String columnName = columns.getString("COLUMN_NAME");
             String columnType = columns.getString("TYPE_NAME");
-//            String constraintDefinition = columns.getString("COLUMN_DEF");
             int columnSize = columns.getInt("COLUMN_SIZE");
             int decimalDigits = columns.getInt("DECIMAL_DIGITS");
             int nullable = columns.getInt("NULLABLE");
@@ -153,10 +150,6 @@ public class OracleDBSchemaCloner implements SchemaCloner {
                 columnDefinition += " DEFAULT " + defaultValue;
             }
             columnDefinition += " " + isNullable + ", ";
-
-//            if (constraintDefinition != null) {
-//                columnMap.put(columnName, constraintDefinition);
-//            }
         }
         columns.close();
         writer.write(columnDefinition.substring(0, columnDefinition.length() - 2));
@@ -200,32 +193,9 @@ public class OracleDBSchemaCloner implements SchemaCloner {
         pstmt.close();
         writer.write(") " + (isLogging?"LOGGING":"NOLOGGING") + "\n");
         writer.write("/** END **/\n");
-
-        // Write Default value constraints
-//        for (Map.Entry<String, String> entry : columnMap.entrySet()) {
-//            writeDefaultConstraint(connection, writer, tableName, entry.getKey(), entry.getValue());
-//        }
-//        columnMap.clear();
     }
 
-//    private void writeDefaultConstraint(Connection connection, BufferedWriter writer, String tableName, String columnName, String constraintDefinition) throws SQLException, IOException {
-//        String query = "SELECT constraint_name FROM all_constraints WHERE table_name = ? AND constraint_type = 'C' AND search_condition_vc LIKE ?";
-//        PreparedStatement pstmt = connection.prepareStatement(query);
-//        pstmt.setString(1, tableName);
-//        pstmt.setString(2, "%" + columnName + "%");
-//
-//        ResultSet rsdc = pstmt.executeQuery();
-//        while (rsdc.next()) {
-//            String constraintName = rsdc.getString("constraint_name");
-//            writer.write("/** START **/\n");
-//            writer.write("ALTER TABLE " + tableName + " MODIFY (CONSTRAINT " + constraintName + " " + columnName + " DEFAULT " + constraintDefinition + ")\n");
-//            writer.write("/** END **/\n");
-//        }
-//        rsdc.close();
-//        pstmt.close();
-//    }
-
-    private void writeForeignAndUniqueKeys(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
+    private void writeForeignAndUniqueKeys(Connection connection, BufferedWriter writer, String tableName, Set<String> uniqueConstraintSet, Map<String, String> tableIndexMap) throws SQLException, IOException {
         DatabaseMetaData metaData = connection.getMetaData();
 
         // Write Foreign Key constraints
@@ -283,7 +253,7 @@ public class OracleDBSchemaCloner implements SchemaCloner {
         ps.close();
     }
 
-    private void writeIndexes(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
+    private void writeIndexes(Connection connection, BufferedWriter writer, String tableName, Set<String> uniqueConstraintSet, Map<String, String> tableIndexMap) throws SQLException, IOException {
         DatabaseMetaData metaData = connection.getMetaData();
         ResultSet indexes = metaData.getIndexInfo(null, null, tableName, false, false);
         Map<String, String> indexColumnsMap = new HashMap<>();
@@ -318,8 +288,8 @@ public class OracleDBSchemaCloner implements SchemaCloner {
         indexes.close();
     }
 
-    private void insertDataInHierarchy(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
-        if (hashSet.contains(tableName)) return;
+    private void insertDataInHierarchy(Connection connection, BufferedWriter writer, String tableName, Set<String> addedTableSet) throws SQLException, IOException {
+        if (addedTableSet.contains(tableName)) return;
 
         String query = "SELECT r.table_name AS PARENT_TABLE FROM user_constraints t JOIN user_constraints r ON t.r_constraint_name = r.constraint_name WHERE t.constraint_type = 'R' AND t.table_name = ?";
         PreparedStatement pstmt = connection.prepareStatement(query);
@@ -327,12 +297,12 @@ public class OracleDBSchemaCloner implements SchemaCloner {
         ResultSet parentSet = pstmt.executeQuery();
         while (parentSet.next()) {
             String pkTableName = parentSet.getString("PARENT_TABLE");
-            if (!(tableName.equals(pkTableName))) insertDataInHierarchy(connection, writer, pkTableName);
+            if (!(tableName.equals(pkTableName))) insertDataInHierarchy(connection, writer, pkTableName, addedTableSet);
         }
         parentSet.close();
         pstmt.close();
         writeInsertQuery(connection, writer, tableName);
-        hashSet.add(tableName);
+        addedTableSet.add(tableName);
     }
 
     private void writeInsertQuery(Connection connection, BufferedWriter writer, String tableName) throws SQLException, IOException {
